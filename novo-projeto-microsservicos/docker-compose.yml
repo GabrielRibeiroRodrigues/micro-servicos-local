@@ -1,0 +1,106 @@
+services:
+  #--- Serviço de Catálogo ---
+  db_catalogo:
+    image: postgres:15-alpine
+    volumes:
+      - db_data_catalogo:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+  servico-catalogo:
+    build: ./servico_catalogo
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./servico_catalogo:/app
+    ports:
+      - "8001:8000"
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - DB_HOST=db_catalogo
+      - DB_PORT=5432
+    depends_on:
+      - db_catalogo
+
+  #--- Serviço de Pessoas ---
+  db_pessoas:
+    image: postgres:15-alpine
+    volumes:
+      - db_data_pessoas:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+  servico-pessoas:
+    build: ./servico_pessoas
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./servico_pessoas:/app
+    ports:
+      - "8002:8000"
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - DB_HOST=db_pessoas
+      - DB_PORT=5432
+    depends_on:
+      - db_pessoas
+
+  #--- Serviço de Serviços (Tipos) ---
+  db_servicos:
+    image: postgres:15-alpine
+    volumes:
+      - db_data_servicos:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+  servico-servicos:
+    build: ./servico_servicos
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./servico_servicos:/app
+    ports:
+      - "8003:8000"
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - DB_HOST=db_servicos
+      - DB_PORT=5432
+    depends_on:
+      - db_servicos
+
+  #--- Serviço de Solicitações ---
+  db_solicitacoes:
+    image: postgres:15-alpine
+    volumes:
+      - db_data_solicitacoes:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+  servico-solicitacoes:
+    build: ./servico_solicitacoes
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./servico_solicitacoes:/app
+    ports:
+      - "8004:8000"
+    environment:
+      - POSTGRES_DB=db
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=admin
+      - DB_HOST=db_solicitacoes
+      - DB_PORT=5432
+    depends_on:
+      - db_solicitacoes
+
+volumes:
+  db_data_catalogo:
+  db_data_pessoas:
+  db_data_servicos:
+  db_data_solicitacoes:
