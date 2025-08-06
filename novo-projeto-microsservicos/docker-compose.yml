@@ -1,106 +1,140 @@
 services:
   #--- Serviço de Catálogo ---
   db_catalogo:
-    image: postgres:15-alpine
+    image: postgres:15
     volumes:
       - db_data_catalogo:/var/lib/postgresql/data/
-    environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
+    environment: &db-env
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
+      POSTGRES_DB: db
+    networks:
+      - microservico-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   servico-catalogo:
     build: ./servico_catalogo
+    entrypoint: /app/entrypoint.sh
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./servico_catalogo:/app
     ports:
       - "8001:8000"
-    environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
-      - DB_HOST=db_catalogo
-      - DB_PORT=5432
+    # A âncora da API agora inclui as credenciais
+    environment: &api-env 
+      DB_HOST: db_catalogo
+      POSTGRES_DB: db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin
     depends_on:
-      - db_catalogo
+      db_catalogo:
+        condition: service_healthy
+    networks:
+      - microservico-net
 
   #--- Serviço de Pessoas ---
   db_pessoas:
-    image: postgres:15-alpine
+    image: postgres:15
     volumes:
       - db_data_pessoas:/var/lib/postgresql/data/
-    environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
+    environment: *db-env
+    networks:
+      - microservico-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   servico-pessoas:
     build: ./servico_pessoas
+    entrypoint: /app/entrypoint.sh
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./servico_pessoas:/app
     ports:
       - "8002:8000"
     environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
-      - DB_HOST=db_pessoas
-      - DB_PORT=5432
+      <<: *api-env # Usa a âncora completa
+      DB_HOST: db_pessoas # E apenas sobrescreve o DB_HOST
     depends_on:
-      - db_pessoas
+      db_pessoas:
+        condition: service_healthy
+    networks:
+      - microservico-net
 
   #--- Serviço de Serviços (Tipos) ---
   db_servicos:
-    image: postgres:15-alpine
+    image: postgres:15
     volumes:
       - db_data_servicos:/var/lib/postgresql/data/
-    environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
+    environment: *db-env
+    networks:
+      - microservico-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   servico-servicos:
     build: ./servico_servicos
+    entrypoint: /app/entrypoint.sh
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./servico_servicos:/app
     ports:
       - "8003:8000"
     environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
-      - DB_HOST=db_servicos
-      - DB_PORT=5432
+      <<: *api-env
+      DB_HOST: db_servicos
     depends_on:
-      - db_servicos
+      db_servicos:
+        condition: service_healthy
+    networks:
+      - microservico-net
 
   #--- Serviço de Solicitações ---
   db_solicitacoes:
-    image: postgres:15-alpine
+    image: postgres:15
     volumes:
       - db_data_solicitacoes:/var/lib/postgresql/data/
-    environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
+    environment: *db-env
+    networks:
+      - microservico-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   servico-solicitacoes:
     build: ./servico_solicitacoes
+    entrypoint: /app/entrypoint.sh
     command: python manage.py runserver 0.0.0.0:8000
     volumes:
       - ./servico_solicitacoes:/app
     ports:
       - "8004:8000"
     environment:
-      - POSTGRES_DB=db
-      - POSTGRES_USER=admin
-      - POSTGRES_PASSWORD=admin
-      - DB_HOST=db_solicitacoes
-      - DB_PORT=5432
+      <<: *api-env
+      DB_HOST: db_solicitacoes
     depends_on:
-      - db_solicitacoes
+      db_solicitacoes:
+        condition: service_healthy
+    networks:
+      - microservico-net
 
 volumes:
   db_data_catalogo:
   db_data_pessoas:
   db_data_servicos:
   db_data_solicitacoes:
+
+networks:
+  microservico-net:
+    driver: bridge

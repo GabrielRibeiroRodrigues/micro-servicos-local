@@ -1,8 +1,15 @@
-from django.urls import path
-from .views import SolicitarServicoListCreateView, SolicitarServicoDetailView
+# servico_solicitacoes/solicitacoes/urls.py
 
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .views import SolicitarServicoViewSet
+
+# Cria um roteador
+router = DefaultRouter()
+# Registra nossa ViewSet com o roteador
+router.register(r'solicitacoes', SolicitarServicoViewSet, basename='solicitarservico')
+
+# As URLs da API são agora determinadas automaticamente pelo roteador.
 urlpatterns = [
-    path("solicitacoes/", SolicitarServicoListCreateView.as_view(), name="solicitacao-list-create"),
-    path("solicitacoes/<int:pk>/", SolicitarServicoDetailView.as_view(), name="solicitacao-detail"),
+    path('', include(router.urls)),
 ]
-
