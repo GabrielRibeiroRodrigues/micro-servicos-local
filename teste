@@ -1,0 +1,342 @@
+from ultralytics import YOLO
+import cv2
+import numpy as np 
+from datetime import datetime
+import gc
+import os
+import threading
+import queue
+import time
+from collections import defaultdict
+import torch
+import sys
+
+# --- Constants ---
+MODEL_PATH = "C:\\Users\\12265587630\\Desktop\\bestn.pt"
+VIDEO_SOURCE = "C:\\Users\\12265587630\\Desktop\\f1.mp4"
+# VIDEO_SOURCE = "rtsp://admin:123456789abc@192.168.1.108:554/cam/realmonitor?channel=1&subtype=0" # Example RTSP alternative
+CONFIDENCE_THRESHOLD = 0.1  # Original: confianca_detectar_carro
+FRAME_SKIP_INTERVAL = 1     # Original: intervalo_frames
+ROTATION_ANGLES = [0]   # Simplified: apenas ângulo original para melhor performance
+OUTPUT_BASE_DIR_NAME = "placas_detectadas"
+DESKTOP_PATH = os.path.join(os.path.expanduser("~"), "Desktop")
+
+# Car counting constants
+CAR_COUNT_INTERVAL_SECONDS = 5.0  # Seconds between car counts
+# --- End Constants ---
+
+# results = {} # Unused
+
+# Car counting system with frame-based timer
+car_counter = 0
+last_car_count_frame = -999  # Frame number of last car count
+detection_active = False  # Flag to track if there's an active detection period
+car_count_interval_frames = 0  # Will be calculated based on video FPS
+has_detections_this_frame = False  # Track if current frame has detections
+
+def count_car_with_frame_timer(current_frame):
+    """Count a car using frame-based approach. Only increments when detection becomes active after period of no detections."""
+    global car_counter, last_car_count_frame, detection_active, car_count_interval_frames
+    
+    # If it's the first detection or enough frames have passed since last count
+    if not detection_active and (current_frame - last_car_count_frame >= car_count_interval_frames or car_counter == 0):
+        car_counter += 1
+        last_car_count_frame = current_frame
+        detection_active = True
+        car_id = f"car_{car_counter}"
+        print(f"🚗 Novo carro detectado! ID: {car_id} - Total: {car_counter} (Frame: {current_frame})")
+        return car_id
+    else:
+        # Same detection period, return existing car ID
+        return f"car_{car_counter}" if car_counter > 0 else "car_1"
+
+def reset_detection_if_no_plates():
+    """Reset detection_active flag if no plates detected in current frame"""
+    global detection_active, has_detections_this_frame
+    
+    if not has_detections_this_frame:
+        detection_active = False
+
+def print_stats():
+    """Print current statistics"""
+    frames_since_last = frame_nmr - last_car_count_frame if last_car_count_frame > -999 else 0
+    frames_until_next = max(0, car_count_interval_frames - frames_since_last)
+    print(f"📊 Stats - Total carros: {car_counter} | Próximo count em: {frames_until_next} frames | Frame atual: {frame_nmr}")
+
+def load_yolo_model_safe(model_path):
+    """Safely load YOLO model with compatibility fixes for older models"""
+    import torch
+    import types
+    
+    print(f"🔄 Carregando modelo YOLO: {model_path}")
+    
+    # Add safe globals for older Ultralytics models
+    torch.serialization.add_safe_globals([
+        'ultralytics.nn.tasks.DetectionModel',
+        'ultralytics.nn.modules.head.Detect',
+        'ultralytics.nn.modules.conv.Conv',
+        'ultralytics.nn.modules.block.C2f',
+        'ultralytics.nn.modules.block.Bottleneck',
+        'ultralytics.nn.modules.block.SPPF',
+    ])
+    
+    # Create mock ultralytics.utils module if needed
+    if 'ultralytics.utils' not in sys.modules:
+        mock_utils = types.ModuleType('ultralytics.utils')
+        mock_utils.LOGGER = types.SimpleNamespace()
+        mock_utils.LOGGER.info = lambda x: None
+        mock_utils.LOGGER.warning = lambda x: None
+        sys.modules['ultralytics.utils'] = mock_utils
+    
+    try:
+        # Try loading normally first
+        model = YOLO(model_path)
+        print("✅ Modelo carregado com sucesso!")
+        return model
+    except Exception as e1:
+        print(f"⚠️ Falha no carregamento normal: {e1}")
+        
+        try:
+            # Try with weights_only=False
+            print("🔄 Tentando carregar com weights_only=False...")
+            original_load = torch.load
+            
+            def patched_load(*args, **kwargs):
+                kwargs['weights_only'] = False
+                return original_load(*args, **kwargs)
+            
+            torch.load = patched_load
+            model = YOLO(model_path)
+            torch.load = original_load  # Restore original function
+            print("✅ Modelo carregado com patch weights_only=False!")
+            return model
+            
+        except Exception as e2:
+            print(f"⚠️ Falha com weights_only=False: {e2}")
+            
+            try:
+                # Fallback to official YOLOv8n model
+                print("🔄 Usando modelo YOLOv8n oficial como fallback...")
+                model = YOLO('yolov8n.pt')  # This will download if not present
+                print("✅ Modelo YOLOv8n oficial carregado!")
+                return model
+                
+            except Exception as e3:
+                print(f"❌ Falha completa no carregamento: {e3}")
+                print("💡 Sugestões:")
+                print("   1. Verifique se o arquivo do modelo existe")
+                print("   2. Tente retreinar o modelo com a versão atual do Ultralytics")
+                print("   3. Use um modelo oficial do YOLOv8")
+                raise e3
+
+detector_placa = load_yolo_model_safe(MODEL_PATH)
+cap = cv2.VideoCapture(VIDEO_SOURCE)
+
+if not cap.isOpened():
+    print(f"Erro ao abrir o vídeo: {VIDEO_SOURCE}")
+    exit()
+
+# Get video FPS and calculate frame interval for car counting
+fps = cap.get(cv2.CAP_PROP_FPS)
+if fps <= 0:  # Fallback if FPS detection fails
+    fps = 30.0  # Default assumption
+    print(f"⚠️ FPS não detectado, usando padrão: {fps} FPS")
+else:
+    print(f"📹 FPS do vídeo: {fps}")
+
+car_count_interval_frames = int(fps * CAR_COUNT_INTERVAL_SECONDS)
+print(f"🔢 Intervalo de contagem: {car_count_interval_frames} frames ({CAR_COUNT_INTERVAL_SECONDS}s)")
+
+# veiculos = [2, 3, 5, 7]  # Unused
+# confianca_detectar_carro = 0.1 # Moved to CONFIDENCE_THRESHOLD
+frame_nmr = -1
+ret = True # Controls the main loop, updated by cap.read()
+# intervalo_frames = 1 # Moved to FRAME_SKIP_INTERVAL
+# frame_anterior = -8 # Unused
+
+# Statistics tracking
+last_stats_time = time.time()
+stats_interval = 10.0  # Print stats every 10 seconds
+
+# Fila para salvar imagens das placas em thread separada
+placa_queue = queue.Queue()
+
+def salvar_placas_worker():
+    while True:
+        item = placa_queue.get()
+        if item is None:
+            break  # Sinal para encerrar a thread
+        
+        placa_carro_crop, car_id, current_frame_nmr, timestamp, angulos_rot, data_hoje_str = item
+        (h, w) = placa_carro_crop.shape[:2]
+        center = (w // 2, h // 2)
+        
+        pasta_base = os.path.join(DESKTOP_PATH, OUTPUT_BASE_DIR_NAME, data_hoje_str)
+        
+        # Verificar se o diretório existe e criar se necessário
+        if not os.path.exists(pasta_base):
+            try:
+                os.makedirs(pasta_base, exist_ok=True)
+                print(f"📁 Diretório criado: {pasta_base}")
+            except OSError as e:
+                print(f"❌ Erro ao criar diretório {pasta_base}: {e}")
+                placa_queue.task_done()
+                continue
+        
+        # Verificar se temos permissão de escrita
+        if not os.access(pasta_base, os.W_OK):
+            print(f"❌ Sem permissão de escrita em: {pasta_base}")
+            placa_queue.task_done()
+            continue
+
+        # Reduzir angulos para evitar sobrecarga - apenas ângulo 0 (original)
+        for angulo in [0]:  # Simplificado para reduzir carga do sistema
+            try:
+                # Aguardar um pouco para reduzir a carga do sistema
+                time.sleep(0.02)
+                
+                if angulo == 0:
+                    placa_rot = placa_carro_crop.copy()
+                else:
+                    M = cv2.getRotationMatrix2D(center, -angulo, 1.0)
+                    placa_rot = cv2.warpAffine(placa_carro_crop, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+                
+                nome_arquivo = f"frame_{current_frame_nmr}_car_{car_id}_{timestamp}_ang{angulo}.jpg"
+                caminho_arquivo = os.path.join(pasta_base, nome_arquivo)
+                
+                # Verificar se o arquivo já existe
+                if os.path.exists(caminho_arquivo):
+                    print(f"⚠️ Arquivo já existe, pulando: {nome_arquivo}")
+                    continue
+                
+                # Tentar salvar como JPG com qualidade reduzida para melhor performance
+                success = cv2.imwrite(caminho_arquivo, placa_rot, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                
+                if not success:
+                    print(f"❌ Falha ao salvar JPG: {caminho_arquivo}")
+                    # Aguardar antes do fallback
+                    time.sleep(0.05)
+                    
+                    # Tentar como PNG com compressão mínima como fallback
+                    nome_arquivo_png = nome_arquivo.replace('.jpg', '.png')
+                    caminho_arquivo_png = os.path.join(pasta_base, nome_arquivo_png)
+                    success_png = cv2.imwrite(caminho_arquivo_png, placa_rot, [cv2.IMWRITE_PNG_COMPRESSION, 0])
+                    if success_png and os.path.exists(caminho_arquivo_png):
+                        print(f"✅ Salvo como PNG: {nome_arquivo_png}")
+                    else:
+                        print(f"❌ Falha completa ao salvar: {nome_arquivo}")
+                else:
+                    if os.path.exists(caminho_arquivo):
+                        print(f"✅ Salvo: {nome_arquivo}")
+                    else:
+                        print(f"❌ Arquivo não foi criado: {nome_arquivo}")
+                    
+            except Exception as e:
+                erro_str = str(e)
+                if "libpng" in erro_str.lower():
+                    print(f"❌ Erro libpng ângulo {angulo}: Tentando aguardar e continuar...")
+                    time.sleep(0.1)  # Aguardar em caso de erro libpng
+                else:
+                    print(f"❌ Erro inesperado ao processar ângulo {angulo}: {e}")
+                continue
+                
+        placa_queue.task_done()
+
+# Inicia a thread de salvamento
+thread_salvar = threading.Thread(target=salvar_placas_worker, daemon=True)
+thread_salvar.start()
+
+try:
+    while ret: # Loop continues as long as cap.read() is successful
+        # data_e_hora_atuais = datetime.now() # Not directly used for naming here
+        # data_e_hora_em_texto = data_e_hora_atuais.strftime('%Y-%m-%d %H:%M:%S') # Unused
+        # data_atual = data_e_hora_atuais.strftime("%Y-%m-%d") # Unused, data_hoje is generated per detection
+
+        frame_to_process = None
+        # Loop to read/skip frames according to FRAME_SKIP_INTERVAL
+        # Processes the last frame read in this sequence
+        for _ in range(FRAME_SKIP_INTERVAL):
+            frame_nmr += 1
+            success, frame_read = cap.read() # 'success' will update the 'ret' for the main loop
+            if not success:
+                ret = False # Signal main loop to terminate
+                print(f"Não foi possível ler o frame {frame_nmr} ou fim do vídeo.")
+                break # Exit this inner loop
+            frame_to_process = frame_read # Keep the latest successfully read frame
+        
+        if not ret: # If cap.read() failed in the inner loop
+            break # Exit the main while loop
+
+        if frame_to_process is None:
+            # This might happen if FRAME_SKIP_INTERVAL is 0 or if ret is True but frame_read was None (unlikely)
+            print(f"Nenhum frame válido para processar (frame_nmr: {frame_nmr}), mas 'ret' é True. Pulando.")
+            continue
+
+        # Detecção de placas usando apenas o modelo de placas
+        detections_placas = detector_placa(frame_to_process)[0]
+        placas_detectadas = []
+        current_time = time.time()
+        has_detections_this_frame = False  # Reset flag for this frame
+        
+        for detection in detections_placas.boxes.data.tolist():
+            x1, y1, x2, y2, confianca_atual, class_id = detection
+            if confianca_atual >= CONFIDENCE_THRESHOLD:
+                placas_detectadas.append([x1, y1, x2, y2, confianca_atual])
+                has_detections_this_frame = True  # Mark that we have detections
+
+        # Process detected plates and track cars
+        if placas_detectadas:
+            # Only process the first detected plate for car counting
+            placa = placas_detectadas[0]  # Use first detection only
+            x1_p, y1_p, x2_p, y2_p, _ = placa
+            x1_p, y1_p, x2_p, y2_p = int(x1_p), int(y1_p), int(x2_p), int(y2_p)
+            
+            img_h, img_w = frame_to_process.shape[:2]
+            if (0 <= x1_p < img_w and 0 <= y1_p < img_h and
+                x1_p < x2_p <= img_w and y1_p < y2_p <= img_h):
+                
+                # Use frame-based car counting
+                car_id = count_car_with_frame_timer(frame_nmr)
+                
+                # Save all detected plates with the same car_id
+                for placa in placas_detectadas:
+                    x1_p, y1_p, x2_p, y2_p, _ = placa
+                    x1_p, y1_p, x2_p, y2_p = int(x1_p), int(y1_p), int(x2_p), int(y2_p)
+                    
+                    if (0 <= x1_p < img_w and 0 <= y1_p < img_h and
+                        x1_p < x2_p <= img_w and y1_p < y2_p <= img_h):
+                        
+                        placa_carro_crop = frame_to_process[y1_p:y2_p, x1_p:x2_p]
+                        
+                        if placa_carro_crop.size != 0:
+                            data_hoje_str = datetime.now().strftime("%Y-%m-%d")
+                            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                            placa_queue.put((placa_carro_crop.copy(), car_id, frame_nmr, timestamp, ROTATION_ANGLES, data_hoje_str))
+                    else:
+                        print(f"Coordenadas da placa ({x1_p},{y1_p},{x2_p},{y2_p}) fora dos limites da imagem ({img_w}x{img_h}). Frame: {frame_nmr}")
+        
+        # Reset detection flag if no plates detected in this frame
+        reset_detection_if_no_plates()
+        
+        # Print statistics periodically
+        if current_time - last_stats_time >= stats_interval:
+            print_stats()
+            last_stats_time = current_time
+        
+        del frame_to_process # Explicitly delete frame to help memory management
+        gc.collect()  # Força o coletor de lixo a liberar memória
+
+finally:
+    print("Finalizando o processamento...")
+    print(f"🏁 RESUMO FINAL - Total de carros contados: {car_counter}")
+    
+    # Finaliza a thread de salvamento
+    placa_queue.put(None) # Signal worker thread to terminate
+    thread_salvar.join() # Wait for worker thread to finish
+    print("Thread de salvamento finalizada.")
+
+    if cap.isOpened():
+        cap.release()
+        print("Recursos da câmera liberados.")
+    cv2.destroyAllWindows() # Good practice, though not strictly necessary for non-GUI script
+    print("Script encerrado.")
